@@ -1,0 +1,130 @@
+name: Publish verified APK from private Actions
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App to publish
+        required: true
+        type: choice
+        options: [lifecalendar, kuraberu, ccna, juggler]
+      source_run_id:
+        description: Successful source GitHub Actions run ID
+        required: true
+        type: string
+      artifact_name:
+        description: Exact source artifact name containing the APK
+        required: true
+        type: string
+      expected_certificate_sha256:
+        description: Expected signing certificate SHA-256 (colon-separated or plain hex)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-publish-${{ inputs.app }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require configured private-source token
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
+        run: |
+          if [ -z "$SOURCE_TOKEN" ]; then
+            echo "::error::Configure SOURCE_ARTIFACT_READ_TOKEN with Actions read permission on the private source repositories"
+            exit 1
+          fi
+      - name: Resolve source and validate run
+        id: source
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
+          APP: ${{ inputs.app }}
+          RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          case "$APP" in
+            lifecalendar|kuraberu) SOURCE="ak-0923/LifeCalendar-App";;
+            ccna) SOURCE="ak-0923/CCNAVocabTrainer";;
+            juggler) SOURCE="ak-0923/JugglerCounter";;
+            *) exit 1;;
+          esac
+          case "$RUN_ID" in *[!0-9]*|'') echo "::error::Invalid run ID"; exit 1;; esac
+          STATUS="$(gh api "repos/$SOURCE/actions/runs/$RUN_ID" --jq '.conclusion')"
+          if [ "$STATUS" != "success" ]; then
+            echo "::error::Source run is not successful: $STATUS"
+            exit 1
+          fi
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          gh api "repos/$SOURCE/actions/runs/$RUN_ID" --jq '"Source commit: " + .head_sha'
+      - name: Download the exact artifact
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
+          SOURCE: ${{ steps.source.outputs.source }}
+          RUN_ID: ${{ inputs.source_run_id }}
+          ARTIFACT: ${{ inputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          gh run download "$RUN_ID" --repo "$SOURCE" --name "$ARTIFACT" --dir artifact
+      - name: Inspect and verify APK
+        id: verify
+        env:
+          APP: ${{ inputs.app }}
+          EXPECTED_CERT: ${{ inputs.expected_certificate_sha256 }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' apks < <(find artifact -type f -name '*.apk' -print0)
+          if [ "${#apks[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one APK in artifact; found ${#apks[@]}"
+            exit 1
+          fi
+          APK="${apks[0]}"
+          test "$(stat -c %s "$APK")" -gt 10000
+          SDK="$ANDROID_HOME/build-tools/$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          "$SDK/apksigner" verify --verbose --print-certs "$APK" | tee signing.txt
+          ACTUAL="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' signing.txt | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          EXPECTED="$(printf '%s' "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          if ! [[ "$EXPECTED" =~ ^[0-9A-F]{64}$ ]] || [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "::error::APK signing certificate does not match approved fingerprint"
+            exit 1
+          fi
+          INFO="$("$SDK/aapt" dump badging "$APK" | head -1)"
+          echo "$INFO"
+          PKG="$(printf '%s\n' "$INFO" | sed -n "s/.*name='\([^']*\)'.*/\1/p")"
+          VERSION="$(printf '%s\n' "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          case "$APP:$PKG" in
+            lifecalendar:com.example.lifecalendar|ccna:com.example.ccnavocab|juggler:com.example.jugglercounter) ;;
+            kuraberu:*) echo "::notice::Kuraberu package ID must be reviewed before enabling publication"; exit 1;;
+            *) echo "::error::Unexpected applicationId: $PKG"; exit 1;;
+          esac
+          if [ -z "$VERSION" ] || [[ "$VERSION" == *[!a-zA-Z0-9._-]* ]]; then
+            echo "::error::Invalid version name"
+            exit 1
+          fi
+          TAG="$APP-v$VERSION"
+          NAME="$APP-v$VERSION.apk"
+          mkdir -p release
+          cp "$APK" "release/$NAME"
+          sha256sum "release/$NAME" | tee "release/$NAME.sha256"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+      - name: Publish immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.verify.outputs.tag }}
+          NAME: ${{ steps.verify.outputs.name }}
+          SOURCE: ${{ steps.source.outputs.source }}
+          RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::Release tag already exists; refusing overwrite"
+            exit 1
+          fi
+          gh release create "$TAG" "release/$NAME" "release/$NAME.sha256" --title "$TAG" --notes "Verified APK from $SOURCE Actions run $RUN_ID. Signing certificate checked against supplied fingerprint."
+          gh release view "$TAG" --json assets --jq '.assets[].name'
