@@ -54,10 +54,15 @@ jobs:
             grep -i 'certificate.*sha-256\|sha-256.*certificate' signer.txt || true
             exit 1
           fi
-          if [ "$APP" = "kuraberu" ]; then
-            EXPECTED="C256FB0C3933357141F354FC3EF1A75BF4CE5E620534DDAAD7D62AA8B9C694B3"
-          else
-            EXPECTED="$(printf %s "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          case "$APP" in
+            kuraberu) EXPECTED="C256FB0C3933357141F354FC3EF1A75BF4CE5E620534DDAAD7D62AA8B9C694B3";;
+            lifecalendar|ccna) EXPECTED="BAF5F76D9A1D97915E85FB0E93C5AD623D0685B9D449157DE51D3DB752973324";;
+            juggler) EXPECTED="0C7858B726D1DE1C3C95404E4BB278B7AAF7A4A77EDEA785CAC31EA2961C876B";;
+          esac
+          # Optional operator-provided certificate must agree with the pinned fingerprint.
+          if [ -n "$EXPECTED_CERT" ]; then
+            PROVIDED="$(printf %s "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+            [ "$PROVIDED" = "$EXPECTED" ] || { echo "::error::Input fingerprint differs from pinned certificate"; exit 1; }
           fi
           echo "APK signing certificate SHA-256: $ACTUAL"
           echo "Expected signing certificate SHA-256: $EXPECTED"
