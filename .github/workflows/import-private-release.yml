@@ -50,7 +50,9 @@ jobs:
           "$SDK/apksigner" verify --verbose --print-certs "$APK" > signer.txt
           ACTUAL="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' signer.txt | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
           EXPECTED="$(printf %s "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
-          [[ "$EXPECTED" =~ ^[0-9A-F]{64}$ ]] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "::error::Signing certificate mismatch"; exit 1; }
+          echo "APK signing certificate SHA-256: $ACTUAL"
+          echo "Expected signing certificate SHA-256: $EXPECTED"
+          [[ "$EXPECTED" =~ ^[0-9A-F]{64}$ ]] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "::error::Signing certificate mismatch; APK not published"; exit 1; }
           INFO="$("$SDK/aapt" dump badging "$APK" | head -1)"
           echo "$INFO"
           [[ "$INFO" == *"name='$EXPECTED_PACKAGE'"* ]] || { echo "::error::Package mismatch"; exit 1; }
