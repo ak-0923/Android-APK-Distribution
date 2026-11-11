@@ -9,7 +9,7 @@ on:
         options: [lifecalendar, kuraberu, ccna, juggler]
       expected_certificate_sha256:
         description: Previously verified signing certificate SHA-256
-        required: true
+        required: false
         type: string
 permissions:
   contents: write
@@ -48,13 +48,17 @@ jobs:
           set -euo pipefail
           SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools/$(ls -1 "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" | sort -V | tail -1)"
           "$SDK/apksigner" verify --verbose --print-certs "$APK" > signer.txt
-          ACTUAL="$(sed -nE 's/^.*certificate SHA-256 digest:[[:space:]]*([0-9a-fA-F:]+).*$/\\1/p' signer.txt | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          ACTUAL="$(grep -i 'certificate SHA-256 digest:' signer.txt | head -1 | awk '{print $NF}' | tr -d ':' | tr '[:lower:]' '[:upper:]')"
           if [ -z "$ACTUAL" ]; then
             echo '::error::Cannot parse APK certificate fingerprint; apksigner output follows:'
             grep -i 'certificate.*sha-256\|sha-256.*certificate' signer.txt || true
             exit 1
           fi
-          EXPECTED="$(printf %s "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          if [ "$APP" = "kuraberu" ]; then
+            EXPECTED="C256FB0C3933357141F354FC3EF1A75BF4CE5E620534DDAAD7D62AA8B9C694B3"
+          else
+            EXPECTED="$(printf %s "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          fi
           echo "APK signing certificate SHA-256: $ACTUAL"
           echo "Expected signing certificate SHA-256: $EXPECTED"
           [[ "$EXPECTED" =~ ^[0-9A-F]{64}$ ]] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "::error::Signing certificate mismatch; APK not published"; exit 1; }
