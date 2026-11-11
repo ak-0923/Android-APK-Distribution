@@ -79,10 +79,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Release already exists; refusing overwrite"
             exit 1
           fi
-          gh release create "$RELEASE_TAG" "release/$APK_NAME" "release/$APK_NAME.sha256" --title "$RELEASE_TAG" --notes "Imported from private $SOURCE release $SOURCE_TAG; signing fingerprint checked. Source remains private."
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fx "$APK_NAME"
+          gh release create "$RELEASE_TAG" "release/$APK_NAME" "release/$APK_NAME.sha256" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TAG" --notes "Imported from private $SOURCE release $SOURCE_TAG; signing fingerprint checked. Source remains private."
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$APK_NAME"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$APK_NAME" >> "$GITHUB_STEP_SUMMARY"
