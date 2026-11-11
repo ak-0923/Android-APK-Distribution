@@ -25,4 +25,14 @@ jobs:
               failed=1
             fi
           done
+          for spec in LifeCalendar-App:dev-latest LifeCalendar-App:kuraberu-v1.7.1 CCNAVocabTrainer:dev-stable JugglerCounter:dev-latest; do
+            repo="${spec%%:*}"
+            tag="${spec#*:}"
+            if gh api "repos/ak-0923/$repo/releases/tags/$tag" --jq '.tag_name' >/dev/null; then
+              echo "PASS: $repo release $tag read access"
+            else
+              echo "::error::FAIL: $repo release $tag (check Contents Read-only and release existence)"
+              failed=1
+            fi
+          done
           exit "$failed"
