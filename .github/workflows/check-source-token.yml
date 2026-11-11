@@ -16,11 +16,13 @@ jobs:
             echo "::error::SOURCE_ARTIFACT_READ_TOKEN is missing"
             exit 1
           fi
+          failed=0
           for repo in LifeCalendar-App CCNAVocabTrainer JugglerCounter; do
             if gh api "repos/ak-0923/$repo/actions/runs?per_page=1" --jq '.total_count' >/dev/null; then
               echo "PASS: $repo Actions read access"
             else
               echo "::error::FAIL: $repo Actions read access"
-              exit 1
+              failed=1
             fi
           done
+          exit "$failed"
