@@ -1,0 +1,77 @@
+name: Import verified APK from private Releases
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: App to import
+        type: choice
+        required: true
+        options: [lifecalendar, kuraberu, ccna, juggler]
+      expected_certificate_sha256:
+        description: Previously verified signing certificate SHA-256
+        required: true
+        type: string
+permissions:
+  contents: write
+concurrency:
+  group: apk-import-${{ inputs.app }}
+  cancel-in-progress: false
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download latest signed APK from private release
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
+          APP: ${{ inputs.app }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN"
+          case "$APP" in
+            lifecalendar) SOURCE=ak-0923/LifeCalendar-App; TAG=dev-latest; ASSET=LifeCalendar-debug.apk; PACKAGE=com.example.lifecalendar;;
+            kuraberu) SOURCE=ak-0923/LifeCalendar-App; TAG=kuraberu-v1.7.1; ASSET=KuraberuExpense-v1.7.1-build34.apk; PACKAGE=jp.kuraberu.expense;;
+            ccna) SOURCE=ak-0923/CCNAVocabTrainer; TAG=dev-stable; ASSET=CCNAVocabTrainer-debug.apk; PACKAGE=com.example.ccnavocab;;
+            juggler) SOURCE=ak-0923/JugglerCounter; TAG=dev-latest; ASSET=JugglerCounter-debug.apk; PACKAGE=com.example.jugglercounter;;
+          esac
+          mkdir -p incoming
+          gh release download "$TAG" --repo "$SOURCE" --pattern "$ASSET" --dir incoming
+          test -s "incoming/$ASSET"
+          echo "APK=incoming/$ASSET" >> "$GITHUB_ENV"
+          echo "EXPECTED_PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+          echo "SOURCE=$SOURCE" >> "$GITHUB_ENV"
+          echo "SOURCE_TAG=$TAG" >> "$GITHUB_ENV"
+      - name: Verify signature, package and version
+        env:
+          APP: ${{ inputs.app }}
+          EXPECTED_CERT: ${{ inputs.expected_certificate_sha256 }}
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools/$(ls -1 "${ANDROID_HOME:-$ANDROID_SDK_ROOT}/build-tools" | sort -V | tail -1)"
+          "$SDK/apksigner" verify --verbose --print-certs "$APK" > signer.txt
+          ACTUAL="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' signer.txt | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          EXPECTED="$(printf %s "$EXPECTED_CERT" | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          [[ "$EXPECTED" =~ ^[0-9A-F]{64}$ ]] && [ "$ACTUAL" = "$EXPECTED" ] || { echo "::error::Signing certificate mismatch"; exit 1; }
+          INFO="$("$SDK/aapt" dump badging "$APK" | head -1)"
+          echo "$INFO"
+          [[ "$INFO" == *"name='$EXPECTED_PACKAGE'"* ]] || { echo "::error::Package mismatch"; exit 1; }
+          VERSION="$(echo "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          CODE="$(echo "$INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
+          [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] && [[ "$CODE" =~ ^[0-9]+$ ]] || exit 1
+          RELEASE_TAG="$APP-v$VERSION-build$CODE"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          mkdir -p release
+          cp "$APK" "release/$APP-v$VERSION-build$CODE.apk"
+          sha256sum release/*.apk > "release/$APP-v$VERSION-build$CODE.apk.sha256"
+          echo "APK_NAME=$APP-v$VERSION-build$CODE.apk" >> "$GITHUB_ENV"
+      - name: Publish without overwriting existing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Release already exists; refusing overwrite"
+            exit 1
+          fi
+          gh release create "$RELEASE_TAG" "release/$APK_NAME" "release/$APK_NAME.sha256" --title "$RELEASE_TAG" --notes "Imported from private $SOURCE release $SOURCE_TAG; signing fingerprint checked. Source remains private."
+          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | grep -Fx "$APK_NAME"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$APK_NAME" >> "$GITHUB_STEP_SUMMARY"
