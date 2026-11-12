@@ -19,7 +19,6 @@ concurrency:
 
 jobs:
   import:
-    if: ${{ github.event_name == 'schedule' || inputs.app == 'all' || inputs.app == matrix.app }}
     strategy:
       fail-fast: false
       matrix:
@@ -29,7 +28,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Select requested app after matrix expansion
+        id: select
+        shell: bash
+        env:
+          REQUESTED_APP: ${{ inputs.app }}
+          APP: ${{ matrix.app }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = 'schedule' ] || [ "$REQUESTED_APP" = 'all' ] || [ "$REQUESTED_APP" = "$APP" ]; then
+            echo 'active=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'active=false' >> "$GITHUB_OUTPUT"
+          fi
       - name: Resolve source release from private repositories
+        if: steps.select.outputs.active == 'true' 
         id: source
         shell: bash
         env:
