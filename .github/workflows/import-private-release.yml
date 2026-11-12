@@ -32,7 +32,7 @@ jobs:
           test -n "$GH_TOKEN"
           case "$APP" in
             lifecalendar) SOURCE=ak-0923/LifeCalendar-App; TAG=dev-latest; ASSET=LifeCalendar-debug.apk; PACKAGE=com.example.lifecalendar;;
-            kuraberu) SOURCE=ak-0923/LifeCalendar-App; TAG=kuraberu-v1.7.3; ASSET=KuraberuExpense-v1.7.3-build36.apk; PACKAGE=jp.kuraberu.expense;;
+            kuraberu) SOURCE=ak-0923/LifeCalendar-App; TAG=kuraberu-v1.7.4; ASSET=KuraberuExpense-v1.7.4-build37.apk; PACKAGE=jp.kuraberu.expense;;
             ccna) SOURCE=ak-0923/CCNAVocabTrainer; TAG=dev-stable; ASSET=CCNAVocabTrainer-debug.apk; PACKAGE=com.example.ccnavocab;;
             juggler) SOURCE=ak-0923/JugglerCounter; TAG=dev-latest; ASSET=JugglerCounter-debug.apk; PACKAGE=com.example.jugglercounter;;
           esac
