@@ -32,13 +32,20 @@ jobs:
           test -n "$GH_TOKEN"
           case "$APP" in
             lifecalendar) SOURCE=ak-0923/LifeCalendar-App; TAG=dev-latest; ASSET=LifeCalendar-debug.apk; PACKAGE=com.example.lifecalendar;;
-            kuraberu) SOURCE=ak-0923/LifeCalendar-App; TAG=kuraberu-v1.7.5; ASSET=KuraberuExpense-v1.7.5-build38.apk; PACKAGE=jp.kuraberu.expense;;
+            kuraberu) SOURCE=ak-0923/LifeCalendar-App; TAG=kuraberu-v1.7.6; ASSET=KuraberuExpense-v1.7.6-build39.apk; PACKAGE=jp.kuraberu.expense;;
             ccna) SOURCE=ak-0923/CCNAVocabTrainer; TAG=dev-stable; ASSET=CCNAVocabTrainer-debug.apk; PACKAGE=com.example.ccnavocab;;
             juggler) SOURCE=ak-0923/JugglerCounter; TAG=dev-latest; ASSET=JugglerCounter-debug.apk; PACKAGE=com.example.jugglercounter;;
           esac
           mkdir -p incoming
           gh release download "$TAG" --repo "$SOURCE" --pattern "$ASSET" --dir incoming
           test -s "incoming/$ASSET"
+          if [ "$APP" = "kuraberu" ]; then
+            SOURCE_SHA="$(unzip -p "incoming/$ASSET" assets/build-source-sha.txt | tr -d '\r\n')"
+            [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Missing APK source commit"; exit 1; }
+            RELEASE_SHA="$(gh api "repos/$SOURCE/git/ref/tags/$TAG" --jq '.object.sha')"
+            [ "$SOURCE_SHA" = "$RELEASE_SHA" ] || { echo "::error::APK source commit does not match private release tag"; exit 1; }
+            echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
+          fi
           echo "APK=incoming/$ASSET" >> "$GITHUB_ENV"
           echo "EXPECTED_PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
           echo "SOURCE=$SOURCE" >> "$GITHUB_ENV"
@@ -97,6 +104,6 @@ jobs:
             gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$APK_NAME"
             exit 0
           fi
-          gh release create "$RELEASE_TAG" "release/$APK_NAME" "release/$APK_NAME.sha256" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TAG" --notes "Imported from private $SOURCE release $SOURCE_TAG; signing fingerprint checked. Source remains private."
+          gh release create "$RELEASE_TAG" "release/$APK_NAME" "release/$APK_NAME.sha256" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TAG" --notes "Imported from private $SOURCE release $SOURCE_TAG; build source SHA: ${SOURCE_SHA:-not-embedded}; signing fingerprint checked. Source remains private."
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$APK_NAME"
           echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/$APK_NAME" >> "$GITHUB_STEP_SUMMARY"
