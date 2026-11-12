@@ -91,6 +91,7 @@ jobs:
           echo "EXPECTED_PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
 
       - name: Reject outdated source release and download exact APK
+        if: steps.select.outputs.active == 'true'
         id: download
         shell: bash
         env:
