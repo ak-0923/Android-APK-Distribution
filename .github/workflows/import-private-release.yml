@@ -1,5 +1,8 @@
 name: Import verified APK from private Releases
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/import-private-release.yml']
   workflow_dispatch:
     inputs:
       app:
@@ -23,7 +26,7 @@ jobs:
       - name: Download latest signed APK from private release
         env:
           GH_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
-          APP: ${{ inputs.app }}
+          APP: ${{ inputs.app || 'kuraberu' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -42,7 +45,7 @@ jobs:
           echo "SOURCE_TAG=$TAG" >> "$GITHUB_ENV"
       - name: Verify signature, package and version
         env:
-          APP: ${{ inputs.app }}
+          APP: ${{ inputs.app || 'kuraberu' }}
           EXPECTED_CERT: ${{ inputs.expected_certificate_sha256 }}
         run: |
           set -euo pipefail
@@ -73,7 +76,12 @@ jobs:
           VERSION="$(echo "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
           CODE="$(echo "$INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
           [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] && [[ "$CODE" =~ ^[0-9]+$ ]] || exit 1
-          RELEASE_TAG="$APP-v$VERSION-build$CODE"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            APK_SHA="$(sha256sum "$APK" | cut -c1-12)"
+            RELEASE_TAG="$APP-v$VERSION-build$CODE-src$APK_SHA"
+          else
+            RELEASE_TAG="$APP-v$VERSION-build$CODE"
+          fi
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
           mkdir -p release
           cp "$APK" "release/$APP-v$VERSION-build$CODE.apk"
@@ -85,8 +93,9 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::Release already exists; refusing overwrite"
-            exit 1
+            echo "Release already exists; verifying asset without overwriting"
+            gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$APK_NAME"
+            exit 0
           fi
           gh release create "$RELEASE_TAG" "release/$APK_NAME" "release/$APK_NAME.sha256" --repo "$GITHUB_REPOSITORY" --title "$RELEASE_TAG" --notes "Imported from private $SOURCE release $SOURCE_TAG; signing fingerprint checked. Source remains private."
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -Fx "$APK_NAME"
