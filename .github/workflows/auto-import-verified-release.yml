@@ -1,0 +1,173 @@
+name: Auto-import verified private signed APKs
+
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        type: choice
+        required: true
+        options: [all, lifecalendar, kuraberu, ccna, juggler]
+  schedule:
+    - cron: '15 9 * * *'  # daily check, no source modification
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verified-apk-auto-import
+  cancel-in-progress: false
+
+jobs:
+  import:
+    if: ${{ github.event_name == 'schedule' || inputs.app == 'all' || inputs.app == matrix.app }}
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [lifecalendar, kuraberu, ccna, juggler]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve source release from private repositories
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
+          APP: ${{ matrix.app }}
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo '::error::SOURCE_ARTIFACT_READ_TOKEN is missing'; exit 1; }
+          case "$APP" in
+            lifecalendar) SOURCE='ak-0923/LifeCalendar-App'; BRANCH='main'; TAG='dev-latest'; ASSET='LifeCalendar-debug.apk'; PACKAGE='com.example.lifecalendar';;
+            kuraberu) SOURCE='ak-0923/LifeCalendar-App'; BRANCH='release/kuraberu-v1.7.0-restart-budget'; TAG=''; ASSET=''; PACKAGE='jp.kuraberu.expense';;
+            ccna) SOURCE='ak-0923/CCNAVocabTrainer'; BRANCH='main'; TAG='dev-stable'; ASSET='CCNAVocabTrainer-debug.apk'; PACKAGE='com.example.ccnavocab';;
+            juggler) SOURCE='ak-0923/JugglerCounter'; BRANCH='main'; TAG='dev-latest'; ASSET='JugglerCounter-debug.apk'; PACKAGE='com.example.jugglercounter';;
+            *) exit 1;;
+          esac
+          export SOURCE TAG ASSET APP
+          if [ "$APP" = kuraberu ]; then
+            # Pick only a signed release with the canonical APK asset and the
+            # highest semantic version. The caller still verifies the signer.
+            python3 - <<'PY'
+          import json,os,re,subprocess
+          source=os.environ['SOURCE']
+          releases=json.loads(subprocess.check_output(['gh','api',f'repos/{source}/releases?per_page=100'],text=True))
+          best=None
+          for rel in releases:
+              if rel.get('draft'):continue
+              tag=rel.get('tag_name','')
+              m=re.fullmatch(r'kuraberu-v(\d+)\.(\d+)\.(\d+)',tag)
+              if not m:continue
+              assets=[x['name'] for x in rel.get('assets',[]) if re.fullmatch(r'KuraberuExpense-v\d+\.\d+\.\d+-build\d+\.apk',x.get('name',''))]
+              assets=[x for x in assets if x.startswith('KuraberuExpense-v'+'.'.join(m.groups())+'-')]
+              if len(assets)!=1:continue
+              item=(tuple(map(int,m.groups())),tag,assets[0])
+              if best is None or item[0]>best[0]:best=item
+          if best is None:raise SystemExit('No valid Kuraberu signed Release found')
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write(f'SOURCE_TAG={best[1]}\nSOURCE_ASSET={best[2]}\n')
+          print('Selected Kuraberu version:',best[0])
+          PY
+          else
+            gh api "repos/$SOURCE/releases/tags/$TAG" --jq '.tag_name' >/dev/null
+            echo "SOURCE_TAG=$TAG" >> "$GITHUB_ENV"
+            echo "SOURCE_ASSET=$ASSET" >> "$GITHUB_ENV"
+          fi
+          echo "SOURCE_REPO=$SOURCE" >> "$GITHUB_ENV"
+          echo "SOURCE_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          echo "EXPECTED_PACKAGE=$PACKAGE" >> "$GITHUB_ENV"
+
+      - name: Reject outdated source release and download exact APK
+        id: download
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          CURRENT_SHA="$(gh api "repos/$SOURCE_REPO/git/ref/heads/$SOURCE_BRANCH" --jq '.object.sha')"
+          TAG_SHA="$(gh api "repos/$SOURCE_REPO/git/ref/tags/$SOURCE_TAG" --jq '.object.sha')"
+          TAG_TYPE="$(gh api "repos/$SOURCE_REPO/git/ref/tags/$SOURCE_TAG" --jq '.object.type')"
+          if [ "$TAG_TYPE" = tag ]; then
+            TAG_SHA="$(gh api "repos/$SOURCE_REPO/git/tags/$TAG_SHA" --jq '.object.sha')"
+          fi
+          if [ "$TAG_SHA" != "$CURRENT_SHA" ]; then
+            echo "::notice::Source release is not built from current $SOURCE_BRANCH HEAD; skipping obsolete APK."
+            echo 'current=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p incoming
+          gh release download "$SOURCE_TAG" --repo "$SOURCE_REPO" --pattern "$SOURCE_ASSET" --dir incoming
+          test -s "incoming/$SOURCE_ASSET"
+          echo 'current=true' >> "$GITHUB_OUTPUT"
+          echo "source_commit=$TAG_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Verify signer, identity, version and exact asset bytes
+        if: steps.download.outputs.current == 'true'
+        id: verify
+        shell: bash
+        env:
+          APP: ${{ matrix.app }}
+        run: |
+          set -euo pipefail
+          SDK="$ANDROID_HOME/build-tools/$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)"
+          APK="incoming/$SOURCE_ASSET"
+          test "$(stat -c %s "$APK")" -gt 10000
+          "$SDK/apksigner" verify --verbose --print-certs "$APK" > "$RUNNER_TEMP/apk-signature.txt"
+          CERT="$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt" | head -1 | tr -d ':' | tr '[:lower:]' '[:upper:]')"
+          case "$APP" in
+            lifecalendar|ccna) EXPECTED='BAF5F76D9A1D97915E85FB0E93C5AD623D0685B9D449157DE51D3DB752973324';;
+            kuraberu) EXPECTED='C256FB0C3933357141F354FC3EF1A75BF4CE5E620534DDAAD7D62AA8B9C694B3';;
+            juggler) EXPECTED='0C7858B726D1DE1C3C95404E4BB278B7AAF7A4A77EDEA785CAC31EA2961C876B';;
+          esac
+          if [ "$CERT" != "$EXPECTED" ]; then
+            echo '::error::Signer does not match pinned certificate. Refusing to publish.'
+            exit 1
+          fi
+          INFO="$("$SDK/aapt" dump badging "$APK" | head -1)"
+          [[ "$INFO" == *"name='$EXPECTED_PACKAGE'"* ]] || exit 1
+          VERSION="$(printf '%s\n' "$INFO" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")"
+          CODE="$(printf '%s\n' "$INFO" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p")"
+          [[ "$VERSION" =~ ^[A-Za-z0-9._-]+$ ]] && [[ "$CODE" =~ ^[0-9]+$ ]] || exit 1
+          if [ "$APP" = kuraberu ] && "$SDK/aapt" dump badging "$APK" | grep -q '^application-debuggable'; then
+            echo '::error::Non-debuggable Kuraberu release required.'; exit 1
+          fi
+          TAG="$APP-v$VERSION-build$CODE"
+          NAME="$APP-v$VERSION-build$CODE.apk"
+          mkdir -p release
+          cp "$APK" "release/$NAME"
+          sha256sum "release/$NAME" > "release/$NAME.sha256"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$APK" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish only immutable verified asset, or verify existing
+        if: steps.download.outputs.current == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.verify.outputs.tag }}
+          NAME: ${{ steps.verify.outputs.name }}
+          EXPECTED_SHA256: ${{ steps.verify.outputs.sha256 }}
+          SOURCE_COMMIT: ${{ steps.download.outputs.source_commit }}
+          APP: ${{ matrix.app }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Fail closed on same version with different APK. Never clobber.
+            mkdir -p "$RUNNER_TEMP/prior"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$NAME" --dir "$RUNNER_TEMP/prior"
+            ACTUAL_SHA256="$(sha256sum "$RUNNER_TEMP/prior/$NAME" | cut -d' ' -f1)"
+            [ "$ACTUAL_SHA256" = "$EXPECTED_SHA256" ] || {
+              echo '::error::A different APK already uses this version. Increment versionCode/versionName.'; exit 1;
+            }
+            echo "Already published and SHA256 verified: $TAG" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh release create "$TAG" "release/$NAME" "release/$NAME.sha256" --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" \
+            --notes "Verified signed APK from private $SOURCE_REPO release $SOURCE_TAG; source commit $SOURCE_COMMIT. Pinned package and signing cert verified. No private source published."
+          mkdir -p "$RUNNER_TEMP/public-verify"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$NAME" --dir "$RUNNER_TEMP/public-verify"
+          cmp "release/$NAME" "$RUNNER_TEMP/public-verify/$NAME"
+          echo "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$NAME" >> "$GITHUB_STEP_SUMMARY"
