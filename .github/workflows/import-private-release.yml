@@ -26,7 +26,7 @@ jobs:
       - name: Download latest signed APK from private release
         env:
           GH_TOKEN: ${{ secrets.SOURCE_ARTIFACT_READ_TOKEN }}
-          APP: ${{ inputs.app || 'kuraberu' }}
+          APP: ${{ inputs.app || (contains(github.event.head_commit.message, '[import-lifecalendar]') && 'lifecalendar') || 'kuraberu' }}
         run: |
           set -euo pipefail
           test -n "$GH_TOKEN"
@@ -52,7 +52,7 @@ jobs:
           echo "SOURCE_TAG=$TAG" >> "$GITHUB_ENV"
       - name: Verify signature, package and version
         env:
-          APP: ${{ inputs.app || 'kuraberu' }}
+          APP: ${{ inputs.app || (contains(github.event.head_commit.message, '[import-lifecalendar]') && 'lifecalendar') || 'kuraberu' }}
           EXPECTED_CERT: ${{ inputs.expected_certificate_sha256 }}
         run: |
           set -euo pipefail
