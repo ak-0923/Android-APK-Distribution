@@ -1,5 +1,5 @@
 name: Import verified APK from private Releases
-# Import request: LifeCalendar v2.3.22-merged build63 (source eacb0cf6ccfaf325b28f071f737c4016a2fc422c).
+# Import request: LifeCalendar v2.3.23-merged build64 (source cf7176434bcf72278ca1f97561b3b27ecaec3c34).
 on:
   push:
     branches: [main]
